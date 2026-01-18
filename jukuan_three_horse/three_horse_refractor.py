@@ -99,6 +99,8 @@ def initialize(context):
     g.stoploss_strategy = 3  # 止损策略: 1=止损线, 2=市场趋势, 3=联合
     g.stoploss_limit = 0.09  # 止损线
     g.stoploss_market = 0.05  # 市场趋势止损参数
+    g.enable_stop_loss_by_cur_day = True  # 是否开启日内止损
+    g.stoploss_limit_by_cur_day = -0.03  # 当日亏损 -3% 止损
     g.DBL_control = True  # 小市值大盘顶背离控制
     g.dbl = []  # 顶背离记录
     g.check_dbl_days = 10  # 顶背离检测窗口
@@ -945,9 +947,6 @@ class SmallCap_Strategy(Strategy):
 
     def buy(self, context):
         """小市值买入逻辑"""
-        # 平衡子账户资金
-        self.balance_subportfolios(context)
-
         if not g.trading_signal:
             if g.xsz_buy_etf not in self.subportfolio.long_positions:
                 log.info("小市值清仓时期, 买入ETF")
@@ -1034,8 +1033,8 @@ class SmallCap_Strategy(Strategy):
             current_positions = self.subportfolio.long_positions
             if g.stoploss_strategy in [1, 3]:
                 for stock, position in current_positions.items():
-                    price = position.closeable_amount * get_current_data()[stock].last_price / position.closeable_amount if position.closeable_amount > 0 else get_current_data()[stock].last_price
-                    avg_cost = position.cost
+                    price = get_current_data()[stock].last_price
+                    avg_cost = position.avg_cost
                     if price >= avg_cost * 2:
                         log.info(f"🤑🤑🤑 收益100%止盈,卖出 {stock}")
                         self.order_target_value_(stock, 0)
@@ -1126,7 +1125,7 @@ class SmallCap_Strategy(Strategy):
     def close_account(self, context):
         """清仓后次日资金可转"""
         if not g.trading_signal:
-            if g.strategy_holdings[1] and self.fill_stock not in g.strategy_holdings[1]:
+            if g.strategy_holdings[1] and g.xsz_buy_etf not in g.strategy_holdings[1]:
                 for stock in g.strategy_holdings[1][:]:
                     log.info(f"🤕🤕🤕 进入清仓期间 卖出 {stock}")
                     self.order_target_value_(stock, 0)
@@ -1420,9 +1419,6 @@ class ETF_Rebound_Strategy(Strategy):
 
     def buy(self, context):
         """ETF反弹策略买入逻辑"""
-        # 平衡子账户资金
-        self.balance_subportfolios(context)
-
         cur_date = str(context.current_dt.date())
         if cur_date <= "2023-10-01":
             return
@@ -2065,8 +2061,6 @@ class ETF_Rotation_Strategy(Strategy):
     def buy(self, context):
         """ETF轮动策略买入逻辑"""
         if g.buy_etf:
-            # 平衡子账户资金
-            self.balance_subportfolios(context)
             strategy_cash = context.portfolio.total_value * g.portfolio_value_proportion[3]
             self.order_target_value_(g.buy_etf, strategy_cash)
             log.info(f"[{self.name}] 买入目标ETF: {g.buy_etf}")

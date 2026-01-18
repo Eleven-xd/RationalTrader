@@ -15,7 +15,7 @@ import os
 app = Flask(__name__)
 
 # 配置Tushare Token
-TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', '')
+TUSHARE_TOKEN = "a2827e2cc490fbb8fc2f6523020158a4b2a13bab2acb596d0dfc6e88"#os.getenv('TUSHARE_TOKEN', 'a2827e2cc490fbb8fc2f6523020158a4b2a13bab2acb596d0dfc6e88')
 
 # 初始化Tushare
 if TUSHARE_TOKEN:
