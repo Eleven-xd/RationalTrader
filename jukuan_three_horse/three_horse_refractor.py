@@ -513,12 +513,11 @@ class Strategy:
                 current_value = current_position.closeable_amount * current_data[security].last_price
                 # 计算与目标市值的差异
                 diff_value = abs(current_value - value)
-                # 如果差异小于100股的价值，跳过调整（避免小数量调整导致失败）
-                min_trade_value = 100 * current_data[security].last_price
-                if diff_value < min_trade_value:
+                # 如果差异小于5000元，跳过调整（避免小金额调整）
+                if diff_value < 5000:
                     log.info(
                         f"[{self.name}] {security} 持仓市值{current_value:.2f}元，"
-                        f"目标市值{value:.2f}元，差异{diff_value:.2f}元<{min_trade_value:.2f}元，跳过调整"
+                        f"目标市值{value:.2f}元，差异{diff_value:.2f}元<5000元，跳过调整"
                     )
                     return None
 
@@ -946,8 +945,11 @@ class SmallCap_Strategy(Strategy):
 
     def buy(self, context):
         """小市值买入逻辑"""
+        # 平衡子账户资金
+        self.balance_subportfolios(context)
+
         if not g.trading_signal:
-            if g.xsz_buy_etf not in context.portfolio.positions:
+            if g.xsz_buy_etf not in self.subportfolio.long_positions:
                 log.info("小市值清仓时期, 买入ETF")
                 self.order_target_value_(g.xsz_buy_etf, context.portfolio.total_value * g.portfolio_value_proportion[1])
             return
@@ -955,7 +957,7 @@ class SmallCap_Strategy(Strategy):
         # 计算可用资金（策略1专用部分）
         strategy_value = context.portfolio.total_value * g.portfolio_value_proportion[1]
         current_value = sum(
-            [pos.value for pos in context.portfolio.positions.values() if pos.security in g.strategy_holdings[1]])
+            [pos.value for pos in self.subportfolio.long_positions.values()])
         available_cash = max(0, strategy_value - current_value)
 
         # 买入新标的
@@ -1029,18 +1031,17 @@ class SmallCap_Strategy(Strategy):
     def check_stoploss(self, context):
         """止盈止损检查"""
         if g.run_stoploss:
-            current_positions = context.portfolio.positions
+            current_positions = self.subportfolio.long_positions
             if g.stoploss_strategy in [1, 3]:
-                for stock in current_positions.keys():
-                    if stock in g.strategy_holdings[1]:
-                        price = current_positions[stock].price
-                        avg_cost = current_positions[stock].avg_cost
-                        if price >= avg_cost * 2:
-                            log.info(f"🤑🤑🤑 收益100%止盈,卖出 {stock}")
-                            self.order_target_value_(stock, 0)
-                        elif price < avg_cost * (1 - g.stoploss_limit):
-                            log.info(f"🤬🤬🤬 收益止损,卖出 {stock}")
-                            self.order_target_value_(stock, 0)
+                for stock, position in current_positions.items():
+                    price = position.closeable_amount * get_current_data()[stock].last_price / position.closeable_amount if position.closeable_amount > 0 else get_current_data()[stock].last_price
+                    avg_cost = position.cost
+                    if price >= avg_cost * 2:
+                        log.info(f"🤑🤑🤑 收益100%止盈,卖出 {stock}")
+                        self.order_target_value_(stock, 0)
+                    elif price < avg_cost * (1 - g.stoploss_limit):
+                        log.info(f"🤬🤬🤬 收益止损,卖出 {stock}")
+                        self.order_target_value_(stock, 0)
             if g.stoploss_strategy in [2, 3]:
                 stock_df = get_price(security=get_index_stocks('399101.XSHE'),
                                      end_date=context.previous_date,
@@ -1091,7 +1092,8 @@ class SmallCap_Strategy(Strategy):
                 continue
             if current_data[stock].last_price >= current_data[stock].high_limit * 0.97:
                 continue
-            if context.portfolio.positions[stock].closeable_amount == 0:
+            position = self.subportfolio.long_positions.get(stock)
+            if not position or position.closeable_amount == 0:
                 continue
             rt = huanshoulv(stock, False)
             avg = huanshoulv(stock, True)
@@ -1398,9 +1400,9 @@ class ETF_Rebound_Strategy(Strategy):
                 sell_for_money_list.append(current_holdings[0])
 
         for etf in g.strategy_holdings[2]:
-            position = context.portfolio.positions[etf]
+            position = self.subportfolio.long_positions.get(etf)
             if position:
-                security = position.security
+                security = etf
                 trade_date = position.init_time
                 # 检查 init_time 是否为 None
                 if trade_date is None:
@@ -1418,6 +1420,9 @@ class ETF_Rebound_Strategy(Strategy):
 
     def buy(self, context):
         """ETF反弹策略买入逻辑"""
+        # 平衡子账户资金
+        self.balance_subportfolios(context)
+
         cur_date = str(context.current_dt.date())
         if cur_date <= "2023-10-01":
             return
@@ -1447,9 +1452,9 @@ class ETF_Rebound_Strategy(Strategy):
             # 检测ETF轮动是否有持仓, 如果有的话就要吐出来还给ETF反弹
             if g.strategy_holdings[3]:
                 cur_etf = g.strategy_holdings[3]
-                if context.portfolio.positions[cur_etf].closeable_amount > 0:
+                if cur_etf in context.subportfolios[3].long_positions:
                     # 使用 order_target_value_ 以确保持仓的 init_time 正确设置
-                    current_value = context.portfolio.positions[cur_etf].value
+                    current_value = context.subportfolios[3].long_positions[cur_etf].value
                     target_value = max(0, current_value - strategy_total_value)
                     o = self.order_target_value_(cur_etf, target_value)
                     if o:
@@ -2060,6 +2065,8 @@ class ETF_Rotation_Strategy(Strategy):
     def buy(self, context):
         """ETF轮动策略买入逻辑"""
         if g.buy_etf:
+            # 平衡子账户资金
+            self.balance_subportfolios(context)
             strategy_cash = context.portfolio.total_value * g.portfolio_value_proportion[3]
             self.order_target_value_(g.buy_etf, strategy_cash)
             log.info(f"[{self.name}] 买入目标ETF: {g.buy_etf}")
@@ -2292,8 +2299,7 @@ class WhiteHorse_Strategy(Strategy):
                 log.info(f"[{self.name}] 白马策略调出: {stock}")
 
         # 买入新标的
-        position_count = len([s for s in context.portfolio.positions.keys()
-                              if s in g.strategy_holdings[4]])
+        position_count = len([s for s in self.subportfolio.long_positions.keys()])
         if len(buy_stocks) > position_count:
             value = context.portfolio.total_value * g.portfolio_value_proportion[4] / self.stock_num
             for stock in buy_stocks:
@@ -2390,12 +2396,12 @@ class Dividend_Strategy(Strategy):
         # 计算下单价格与数量
         strategy_value = context.portfolio.total_value * g.portfolio_value_proportion[5]
         current_value = sum(
-            [pos.value for pos in context.portfolio.positions.values() if pos.security in g.strategy_holdings[5]])
+            [pos.value for pos in self.subportfolio.long_positions.values()])
         value = max(0, strategy_value - current_value)
 
         if len(g.sell_list) > 0:
             for s in g.sell_list:
-                value += context.portfolio.positions[s].value
+                value += self.subportfolio.long_positions[s].value
 
         if len(buy_list) > 0:
             value = value / len(buy_list)
