@@ -508,11 +508,12 @@ class MarketSentiment:
             self.cache[cache_key] = panic_index
             self.cache_date = current_date
 
+            print(f"[MarketSentiment] 恐慌指数: {panic_index:.2f} (跌停{limit_down_count}家, 总计{total_count}家)")
             return panic_index
 
         except Exception as e:
             print(f"[MarketSentiment] 计算恐慌指数失败: {e}")
-            return 0
+            raise  # 向上抛出异常，而不是返回固定值
 
     def check_north_money_flow(self, context=None, days=5):
         """
@@ -536,14 +537,16 @@ class MarketSentiment:
                 return self.cache[cache_key]
 
             # 🔧 使用沪深300涨跌作为资金流向代理指标
+            # 修复：使用 panel=False 而不是 df=True
             index_df = get_price('000300.XSHG',
                               end_date=context.current_dt,
                               count=days + 1,
                               frequency='daily',
                               fields=['close'],
-                              df=True)
+                              panel=False)
 
             if index_df is None or len(index_df) < 2:
+                print(f"[MarketSentiment] 获取沪深300数据失败")
                 return 0
 
             consecutive_outflow = 0
@@ -561,11 +564,12 @@ class MarketSentiment:
             self.cache[cache_key] = consecutive_outflow
             self.cache_date = current_date
 
+            print(f"[MarketSentiment] 北向资金（沪深300代理）: 连续下跌{consecutive_outflow}天")
             return consecutive_outflow
 
         except Exception as e:
             print(f"[MarketSentiment] 检查北向资金失败: {e}")
-            return 0
+            raise  # 向上抛出异常，而不是返回固定值
 
     def get_up_down_ratio(self, context=None):
         """
@@ -616,11 +620,12 @@ class MarketSentiment:
             self.cache[cache_key] = up_ratio
             self.cache_date = current_date
 
+            print(f"[MarketSentiment] 涨跌家数比例: 上涨{up_count}家, 总计{total_count}家, 占比{up_ratio*100:.1f}%")
             return up_ratio
 
         except Exception as e:
             print(f"[MarketSentiment] 获取涨跌家数比例失败: {e}")
-            return 0.5
+            raise  # 向上抛出异常，而不是返回固定值
 
     def calculate_market_sentiment(self, context=None):
         """
