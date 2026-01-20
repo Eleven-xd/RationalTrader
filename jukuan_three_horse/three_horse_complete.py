@@ -567,76 +567,6 @@ class MarketSentiment:
             print(f"[MarketSentiment] 检查北向资金失败: {e}")
             return 0
 
-    def calculate_ipo_break_rate(self, context=None, days=30):
-        """
-        计算新股破发率（简化版：使用首日开盘价作为参考）
-        公式：(破发新股数 / 新股总数) × 100
-
-        参数:
-            context: 上下文
-            days: 近多少天上市的新股（默认30天）
-
-        返回:
-            break_rate: 破发率（0-100）
-        """
-        try:
-            # 获取当前日期
-            current_date = context.current_dt.date() if context else datetime.datetime.now().date()
-
-            # 检查缓存
-            cache_key = 'ipo_break_rate'
-            if self.cache_date == current_date and cache_key in self.cache:
-                return self.cache[cache_key]
-
-            # 🔧 获取所有股票，筛选近30日上市的
-            all_stocks = get_all_securities(['stock'])
-            cutoff_date = current_date - datetime.timedelta(days=days)
-
-            ipo_stocks = []
-            for stock, info in all_stocks.iterrows():
-                start_date = info['start_date']
-                if start_date >= cutoff_date:
-                    ipo_stocks.append(stock)
-
-            total_count = len(ipo_stocks)
-            if total_count == 0:
-                # 没有新股，返回中性值（10%破发率）
-                return 10
-
-            # 统计破发数量
-            current_data = get_current_data()
-            break_count = 0
-
-            for stock in ipo_stocks:
-                try:
-                    current_price = current_data[stock].last_price
-
-                    # 🔧 使用首日开盘价作为发行价参考
-                    # 获取该股票上市以来的第一根K线
-                    hist_data = attribute_history(stock, 1, '1d', ['open'], skip_paused=True, df=True, fq='pre')
-
-                    if hist_data is not None and not hist_data.empty:
-                        first_day_open = hist_data['open'].iloc[-1]
-
-                        if first_day_open > 0 and current_price < first_day_open:
-                            break_count += 1
-
-                except Exception:
-                    continue
-
-            # 计算破发率
-            break_rate = (break_count / total_count * 100)
-
-            # 更新缓存
-            self.cache[cache_key] = break_rate
-            self.cache_date = current_date
-
-            return break_rate
-
-        except Exception as e:
-            print(f"[MarketSentiment] 计算新股破发率失败: {e}")
-            return 10  # 返回中性值
-
     def get_up_down_ratio(self, context=None):
         """
         获取大盘涨跌家数比例
@@ -705,7 +635,7 @@ class MarketSentiment:
         """
         scores = {}
 
-        # 1. 恐慌指数（权重30%）
+        # 1. 恐慌指数（权重40%）- 跌停家数占比
         panic_index = self.calculate_panic_index(context)
         if panic_index < 1:
             scores['panic'] = 80  # 市场平静
@@ -720,7 +650,7 @@ class MarketSentiment:
             scores['panic'] = 20  # 市场极度恐慌
             scores['panic_reason'] = '市场极度恐慌'
 
-        # 2. 北向资金（权重30%）
+        # 2. 北向资金（权重40%）- 使用沪深300涨跌作为代理
         outflow_days = self.check_north_money_flow(context)
         if outflow_days == 0:
             scores['north'] = 80  # 资金净流入
@@ -735,22 +665,7 @@ class MarketSentiment:
             scores['north'] = 20  # 重度净流出
             scores['north_reason'] = f'净流出{outflow_days}天'
 
-        # 3. 新股破发率（权重20%）
-        break_rate = self.calculate_ipo_break_rate(context)
-        if break_rate < 20:
-            scores['ipo'] = 80  # IPO表现良好
-            scores['ipo_reason'] = f'IPO破发率{break_rate:.1f}%'
-        elif break_rate < 40:
-            scores['ipo'] = 60  # IPO表现一般
-            scores['ipo_reason'] = f'IPO破发率{break_rate:.1f}%'
-        elif break_rate < 60:
-            scores['ipo'] = 40  # IPO表现较差
-            scores['ipo_reason'] = f'IPO破发率{break_rate:.1f}%'
-        else:
-            scores['ipo'] = 20  # IPO表现极差
-            scores['ipo_reason'] = f'IPO破发率{break_rate:.1f}%'
-
-        # 4. 大盘涨跌家数（权重20%）
+        # 3. 大盘涨跌家数（权重20%）- 上涨股票占比
         up_ratio = self.get_up_down_ratio(context)
         if up_ratio > 0.6:
             scores['trend'] = 80  # 市场强势
@@ -765,11 +680,10 @@ class MarketSentiment:
             scores['trend'] = 20  # 市场弱势
             scores['trend_reason'] = f'上涨占比{up_ratio*100:.1f}%'
 
-        # 综合评分
+        # 综合评分（重新分配权重：恐慌40% + 北向40% + 大盘20%）
         total_score = (
-            scores['panic'] * 0.3 +
-            scores['north'] * 0.3 +
-            scores['ipo'] * 0.2 +
+            scores['panic'] * 0.4 +
+            scores['north'] * 0.4 +
             scores['trend'] * 0.2
         )
 
@@ -1145,7 +1059,6 @@ def check_market_sentiment(context):
         log.info("=" * 80)
         log.info(f"📈 恐慌指数: {scores_detail.get('panic', 'N/A')}")
         log.info(f"📉 北向资金: {scores_detail.get('north', 'N/A')}")
-        log.info(f"📊 IPO表现: {scores_detail.get('ipo', 'N/A')}")
         log.info(f"📈 市场趋势: {scores_detail.get('trend', 'N/A')}")
         log.info("=" * 80)
         log.info(f"🎯 综合评分: {sentiment_score:.2f} / 100")
