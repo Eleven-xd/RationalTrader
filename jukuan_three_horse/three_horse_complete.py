@@ -516,7 +516,7 @@ class MarketSentiment:
 
     def check_north_money_flow(self, context=None, days=5):
         """
-        检查北向资金流向
+        检查北向资金流向（简化版：使用大盘涨跌作为代理指标）
         返回连续净流出天数
 
         参数:
@@ -527,13 +527,39 @@ class MarketSentiment:
             consecutive_outflow: 连续净流出天数
         """
         try:
-            # 获取北向资金历史数据
-            # 注意：实际需要根据聚宽API调整
-            # 这里使用模拟数据
-            consecutive_outflow = 0
+            # 获取当前日期
+            current_date = context.current_dt.date() if context else datetime.datetime.now().date()
 
-            # 模拟：假设北向资金净流入（实际应该从API获取）
-            # consecutive_outflow = self._get_north_money_outflow_days(days)
+            # 检查缓存
+            cache_key = 'north_money_flow'
+            if self.cache_date == current_date and cache_key in self.cache:
+                return self.cache[cache_key]
+
+            # 🔧 使用沪深300涨跌作为资金流向代理指标
+            index_df = get_price('000300.XSHG',
+                              end_date=context.current_dt,
+                              count=days + 1,
+                              frequency='daily',
+                              fields=['close'],
+                              df=True)
+
+            if index_df is None or len(index_df) < 2:
+                return 0
+
+            consecutive_outflow = 0
+            for i in range(len(index_df) - 1, 0, -1):
+                if i > 0:
+                    # 计算日涨跌幅
+                    daily_return = (index_df['close'].iloc[i] - index_df['close'].iloc[i-1]) / index_df['close'].iloc[i-1]
+
+                    if daily_return < 0:  # 大盘下跌视为资金流出
+                        consecutive_outflow += 1
+                    else:
+                        break  # 遇到上涨，停止计数
+
+            # 更新缓存
+            self.cache[cache_key] = consecutive_outflow
+            self.cache_date = current_date
 
             return consecutive_outflow
 
@@ -541,23 +567,9 @@ class MarketSentiment:
             print(f"[MarketSentiment] 检查北向资金失败: {e}")
             return 0
 
-    def _get_north_money_outflow_days(self, days):
-        """
-        获取北向资金连续净流出天数（模拟）
-
-        参数:
-            days: 检查天数
-
-        返回:
-            consecutive_outflow: 连续净流出天数
-        """
-        # 实际应该从聚宽API获取北向资金数据
-        # 这里使用模拟数据
-        return 0
-
     def calculate_ipo_break_rate(self, context=None, days=30):
         """
-        计算新股破发率
+        计算新股破发率（简化版：使用首日开盘价作为参考）
         公式：(破发新股数 / 新股总数) × 100
 
         参数:
@@ -576,28 +588,44 @@ class MarketSentiment:
             if self.cache_date == current_date and cache_key in self.cache:
                 return self.cache[cache_key]
 
-            # 获取近N天上市的新股
-            # 注意：实际需要根据聚宽API调整获取新股列表
-            # 这里使用模拟数据
-            ipo_stocks = self._get_ipo_stocks(days)
+            # 🔧 获取所有股票，筛选近30日上市的
+            all_stocks = get_all_securities(['stock'])
+            cutoff_date = current_date - datetime.timedelta(days=days)
+
+            ipo_stocks = []
+            for stock, info in all_stocks.iterrows():
+                start_date = info['start_date']
+                if start_date >= cutoff_date:
+                    ipo_stocks.append(stock)
+
             total_count = len(ipo_stocks)
+            if total_count == 0:
+                # 没有新股，返回中性值（10%破发率）
+                return 10
+
+            # 统计破发数量
+            current_data = get_current_data()
             break_count = 0
 
-            current_data = get_current_data()
             for stock in ipo_stocks:
                 try:
                     current_price = current_data[stock].last_price
-                    # 获取发行价（模拟）
-                    issue_price = self._get_issue_price(stock)
 
-                    if issue_price > 0 and current_price < issue_price:
-                        break_count += 1
+                    # 🔧 使用首日开盘价作为发行价参考
+                    # 获取该股票上市以来的第一根K线
+                    hist_data = attribute_history(stock, 1, '1d', ['open'], skip_paused=True, df=True, fq='pre')
 
-                except Exception as e:
+                    if hist_data is not None and not hist_data.empty:
+                        first_day_open = hist_data['open'].iloc[-1]
+
+                        if first_day_open > 0 and current_price < first_day_open:
+                            break_count += 1
+
+                except Exception:
                     continue
 
             # 计算破发率
-            break_rate = (break_count / total_count * 100) if total_count > 0 else 0
+            break_rate = (break_count / total_count * 100)
 
             # 更新缓存
             self.cache[cache_key] = break_rate
@@ -607,35 +635,7 @@ class MarketSentiment:
 
         except Exception as e:
             print(f"[MarketSentiment] 计算新股破发率失败: {e}")
-            return 0
-
-    def _get_ipo_stocks(self, days):
-        """
-        获取近N天上市的新股（模拟）
-
-        参数:
-            days: 天数
-
-        返回:
-            ipo_stocks: 新股列表
-        """
-        # 实际应该从聚宽API获取新股列表
-        # 这里返回空列表
-        return []
-
-    def _get_issue_price(self, stock):
-        """
-        获取发行价（模拟）
-
-        参数:
-            stock: 股票代码
-
-        返回:
-            issue_price: 发行价
-        """
-        # 实际应该从聚宽API获取发行价
-        # 这里返回0表示无法获取
-        return 0
+            return 10  # 返回中性值
 
     def get_up_down_ratio(self, context=None):
         """
