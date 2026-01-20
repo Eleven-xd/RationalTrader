@@ -11,6 +11,7 @@
 重构日期：2025年
 """
 
+from typing import Any
 from jqdata import *
 from jqfactor import get_factor_values
 from jqlib.technical_analysis import *
@@ -99,8 +100,6 @@ def initialize(context):
     g.stoploss_strategy = 3  # 止损策略: 1=止损线, 2=市场趋势, 3=联合
     g.stoploss_limit = 0.09  # 止损线
     g.stoploss_market = 0.05  # 市场趋势止损参数
-    g.enable_stop_loss_by_cur_day = True  # 是否开启日内止损
-    g.stoploss_limit_by_cur_day = -0.03  # 当日亏损 -3% 止损
     g.DBL_control = True  # 小市值大盘顶背离控制
     g.dbl = []  # 顶背离记录
     g.check_dbl_days = 10  # 顶背离检测窗口
@@ -888,6 +887,9 @@ class SmallCap_Strategy(Strategy):
     def sell(self, context):
         """小市值卖出逻辑"""
         log.info(f"[{self.name}] 开始调仓 - 日期: {context.current_dt.strftime('%Y-%m-%d')}")
+        
+        # 先清空target_list，避免暂停调仓时仍买入旧目标股票
+        g.target_list = []
 
         # 近期有顶背离信号时暂停调仓（规避系统性风险）
         if g.DBL_control:
@@ -944,13 +946,27 @@ class SmallCap_Strategy(Strategy):
             sell_list and log.info(f"计划卖出 {sell_list}")
         for stock in sell_list:
             self.order_target_value_(stock, 0)
+        
+        # 同步持仓记录（修复止损功能）
+        g.strategy_holdings[1] = list(set(self.subportfolio.long_positions.keys()))
 
     def buy(self, context):
         """小市值买入逻辑"""
         if not g.trading_signal:
+            # 空仓期：先清仓所有小市值股票，再买入ETF，保证互斥
+            current_positions = list(self.subportfolio.long_positions.keys())
+            for stock in current_positions:
+                if stock != g.xsz_buy_etf:
+                    log.info(f"🤕🤕🤕 空仓期清仓小市值股票 {stock}")
+                    self.order_target_value_(stock, 0)
+            
+            # 然后买入ETF
             if g.xsz_buy_etf not in self.subportfolio.long_positions:
                 log.info("小市值清仓时期, 买入ETF")
                 self.order_target_value_(g.xsz_buy_etf, context.portfolio.total_value * g.portfolio_value_proportion[1])
+            
+            # 更新持仓记录
+            g.strategy_holdings[1] = list(self.subportfolio.long_positions.keys())
             return
 
         # 计算可用资金（策略1专用部分）
@@ -965,10 +981,17 @@ class SmallCap_Strategy(Strategy):
             cash_per_stock = available_cash / len(buy_list)
             for stock in buy_list:
                 self.order_target_value_(stock, cash_per_stock)
+        
+        # 同步持仓记录（修复持仓同步问题）
+        g.strategy_holdings[1] = list(set(self.subportfolio.long_positions.keys()))
 
     def check_dbl(self, context, end_days=0):
         """大盘顶背离检测"""
         market_index = '399101.XSHE'
+        
+        # 把第一次9:31执行的给忽略掉, 避免第一次造成干扰
+        if not g.dbl and "9:31" in str(context.current_dt.time()):
+            return
 
         def detect_divergence():
             """检测顶背离"""
@@ -1125,10 +1148,15 @@ class SmallCap_Strategy(Strategy):
     def close_account(self, context):
         """清仓后次日资金可转"""
         if not g.trading_signal:
-            if g.strategy_holdings[1] and g.xsz_buy_etf not in g.strategy_holdings[1]:
-                for stock in g.strategy_holdings[1][:]:
+            # 直接从subportfolio获取当前持仓，不依赖g.strategy_holdings
+            current_positions: list[Any] = list(self.subportfolio.long_positions.keys())
+            if current_positions and g.xsz_buy_etf not in current_positions:
+                for stock in current_positions:
                     log.info(f"🤕🤕🤕 进入清仓期间 卖出 {stock}")
                     self.order_target_value_(stock, 0)
+                
+                # 更新持仓记录
+                g.strategy_holdings[1] = list(self.subportfolio.long_positions.keys())
 
     def check_defense(self, context):
         """成交额宽度防御检测"""
@@ -1416,6 +1444,9 @@ class ETF_Rebound_Strategy(Strategy):
 
         if not g.buy_list:
             log.info(f"[{self.name}] 今日无反弹可购买选项")
+        
+        # 同步持仓记录（修复持仓同步问题）
+        g.strategy_holdings[2] = list(set(self.subportfolio.long_positions.keys()))
 
     def buy(self, context):
         """ETF反弹策略买入逻辑"""
@@ -1433,6 +1464,9 @@ class ETF_Rebound_Strategy(Strategy):
                 for etf in g.buy_list:
                     log.info(f"[{self.name}] 符合策略2买入条件：{etf}")
                     self.order_target_value_(etf, cash)
+        
+        # 同步持仓记录（修复持仓同步问题）
+        g.strategy_holdings[2] = list(set(self.subportfolio.long_positions.keys()))
 
     def capital_balance(self, context):
         """资金平衡逻辑"""
@@ -2057,6 +2091,8 @@ class ETF_Rotation_Strategy(Strategy):
                 self.order_target_value_(stock, 0)
 
         g.buy_etf = targets[0] if targets else None
+        # 同步持仓记录（修复日内止损功能）
+        g.strategy_holdings[3] = list(set(g.strategy_holdings[3]))
 
     def buy(self, context):
         """ETF轮动策略买入逻辑"""
@@ -2064,6 +2100,8 @@ class ETF_Rotation_Strategy(Strategy):
             strategy_cash = context.portfolio.total_value * g.portfolio_value_proportion[3]
             self.order_target_value_(g.buy_etf, strategy_cash)
             log.info(f"[{self.name}] 买入目标ETF: {g.buy_etf}")
+        # 同步持仓记录（修复日内止损功能）
+        g.strategy_holdings[3] = list(set(g.strategy_holdings[3]))
 
     def stop_loss_intraday(self, context):
         """ETF轮动日内止损检测"""
@@ -2301,6 +2339,9 @@ class WhiteHorse_Strategy(Strategy):
                     self.order_target_value_(stock, value)
                     if len(g.strategy_holdings[4]) >= self.stock_num:
                         break
+        
+        # 同步持仓记录（修复持仓同步问题）
+        g.strategy_holdings[4] = list(set(self.subportfolio.long_positions.keys()))
 
 
 # 子策略4的调度包装函数
@@ -2415,6 +2456,9 @@ class Dividend_Strategy(Strategy):
         # 盘前打印
         log.info(f"[{self.name}] 卖出: {g.sell_list}")
         log.info(f"[{self.name}] 红利低波: {g.buy_df}")
+        
+        # 同步持仓记录（修复持仓同步问题）
+        g.strategy_holdings[5] = list(set(self.subportfolio.long_positions.keys()))
 
     def trade(self, context):
         """交易逻辑"""
@@ -2430,6 +2474,9 @@ class Dividend_Strategy(Strategy):
         for s in list(df.index):
             log.info(f"[{self.name}] 买入: {s} {df.loc[s, 'name']}")
             self.order_target_value_(s, df.loc[s, 'value'])
+        
+        # 同步持仓记录（修复持仓同步问题）
+        g.strategy_holdings[5] = list(set(self.subportfolio.long_positions.keys()))
 
     def check_limit_up(self, context):
         """检查昨日涨停股票"""
