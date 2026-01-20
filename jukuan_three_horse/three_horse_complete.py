@@ -164,26 +164,52 @@ class ATRService:
                     # 执行止损
                     if order_func is not None:
                         order_func(security, 0)
+                    # 🔧 清除持仓最高价缓存
+                    cache_key = f"{security}"
+                    if cache_key in self.highest_price_cache:
+                        del self.highest_price_cache[cache_key]
                     return True, stoploss_price, reason
             else:
                 # 盈利状态：使用ATR跟踪止损
 
-                # 获取持仓期间的最高价
-                hist_data = attribute_history(
-                    security,
-                    250,
-                    '1d',
-                    ['close'],
-                    skip_paused=True,
-                    df=True,
-                    fq='pre'
-                )
+                # 🔧 修复：使用持仓期间最高价（不是历史最高价）
+                # 初始化/更新持仓最高价
+                cache_key = f"{security}"
+                if cache_key not in self.highest_price_cache:
+                    # 新持仓：初始化为成本价或前收盘价（取较大值）
+                    hist_data_short = attribute_history(
+                        security,
+                        1,
+                        '1d',
+                        ['close', 'high'],
+                        skip_paused=True,
+                        df=True,
+                        fq='pre'
+                    )
+                    if hist_data_short is not None and not hist_data_short.empty:
+                        prev_close = hist_data_short['close'].iloc[-1]
+                        self.highest_price_cache[cache_key] = max(avg_cost, prev_close)
+                    else:
+                        self.highest_price_cache[cache_key] = avg_cost
+                else:
+                    # 更新持仓最高价：取当前最高价和缓存最高价的较大值
+                    hist_data_short = attribute_history(
+                        security,
+                        1,
+                        '1d',
+                        ['high'],
+                        skip_paused=True,
+                        df=True,
+                        fq='pre'
+                    )
+                    if hist_data_short is not None and not hist_data_short.empty:
+                        current_high = hist_data_short['high'].iloc[-1]
+                        self.highest_price_cache[cache_key] = max(
+                            self.highest_price_cache[cache_key],
+                            current_high
+                        )
 
-                if hist_data is None or hist_data.empty:
-                    return False, None, "历史数据获取失败"
-
-                # 使用max(持仓期间最高价, 成本价)作为基准
-                highest_price = max(hist_data['close'].max(), avg_cost)
+                highest_price = self.highest_price_cache[cache_key]
                 stoploss_price = highest_price - atr * atr_multiplier
 
                 # 多级盈利保护
@@ -202,6 +228,10 @@ class ATRService:
                     # 执行止损
                     if order_func is not None:
                         order_func(security, 0)
+                    # 🔧 清除持仓最高价缓存
+                    cache_key = f"{security}"
+                    if cache_key in self.highest_price_cache:
+                        del self.highest_price_cache[cache_key]
                     return True, stoploss_price, reason
 
             return False, None, "未触发止损"
@@ -258,22 +288,44 @@ class ATRService:
             else:
                 # 盈利状态：使用ATR跟踪止损
 
-                # 获取持仓期间的最高价
-                hist_data = attribute_history(
-                    security,
-                    250,
-                    '1d',
-                    ['close'],
-                    skip_paused=True,
-                    df=True,
-                    fq='pre'
-                )
+                # 🔧 修复：使用持仓期间最高价（不是历史最高价）
+                # 初始化/更新持仓最高价
+                cache_key = f"{security}"
+                if cache_key not in self.highest_price_cache:
+                    # 新持仓：初始化为成本价或前收盘价（取较大值）
+                    hist_data_short = attribute_history(
+                        security,
+                        1,
+                        '1d',
+                        ['close', 'high'],
+                        skip_paused=True,
+                        df=True,
+                        fq='pre'
+                    )
+                    if hist_data_short is not None and not hist_data_short.empty:
+                        prev_close = hist_data_short['close'].iloc[-1]
+                        self.highest_price_cache[cache_key] = max(avg_cost, prev_close)
+                    else:
+                        self.highest_price_cache[cache_key] = avg_cost
+                else:
+                    # 更新持仓最高价：取当前最高价和缓存最高价的较大值
+                    hist_data_short = attribute_history(
+                        security,
+                        1,
+                        '1d',
+                        ['high'],
+                        skip_paused=True,
+                        df=True,
+                        fq='pre'
+                    )
+                    if hist_data_short is not None and not hist_data_short.empty:
+                        current_high = hist_data_short['high'].iloc[-1]
+                        self.highest_price_cache[cache_key] = max(
+                            self.highest_price_cache[cache_key],
+                            current_high
+                        )
 
-                if hist_data is None or hist_data.empty:
-                    return None
-
-                # 使用max(持仓期间最高价, 成本价)作为基准
-                highest_price = max(hist_data['close'].max(), avg_cost)
+                highest_price = self.highest_price_cache[cache_key]
                 stoploss_price = highest_price - atr * atr_multiplier
 
                 # 多级盈利保护
@@ -295,6 +347,17 @@ class ATRService:
         self.atr_cache = {}
         self.atr_cache_date = None
         self.highest_price_cache = {}
+
+    def clear_security_cache(self, security):
+        """
+        清除指定证券的持仓最高价缓存
+
+        Args:
+            security: 股票代码
+        """
+        cache_key = f"{security}"
+        if cache_key in self.highest_price_cache:
+            del self.highest_price_cache[cache_key]
 
 
 class ATRConfig:
@@ -1402,6 +1465,9 @@ class Strategy:
             amount = self.subportfolio.long_positions.get(security, None)
             if amount:
                 log.info(f"[{self.name}] 卖出 {security}，持仓{amount.closeable_amount}股")
+                # 🔧 清除持仓最高价缓存
+                if self.atr_service and self.atr_enabled:
+                    self.atr_service.clear_security_cache(security)
         else:
             # 检查最小交易金额（避免小金额交易，手续费占比高）
             if value <= 5000:
