@@ -22,43 +22,29 @@ except Exception:
 
 
 ETF_NAME_MAP = {
-    "510180.XSHG": "上证180ETF",
-    "513030.XSHG": "德国DAX ETF",
-    "513100.XSHG": "纳指ETF",
-    "513520.XSHG": "日经225ETF",
-    "510410.XSHG": "上证自然资源ETF",
+    "513330.XSHG": "恒生互联网",
+    "588000.XSHG": "科创50",
+    "512010.XSHG": "医药ETF",
+    "159949.XSHE": "创业板50",
+    "510300.XSHG": "300ETF",
+    "515790.XSHG": "光伏ETF",
+    "159941.XSHE": "纳指ETF",
     "518880.XSHG": "黄金ETF",
-    "501018.XSHG": "南方原油",
-    "159985.XSHE": "豆粕ETF",
-    "511090.XSHG": "30年期国债ETF",
-    "159915.XSHE": "创业板ETF",
-    "588120.XSHG": "科创100ETF",
-    "512480.XSHG": "半导体ETF",
-    "159851.XSHE": "金融科技ETF",
-    "513020.XSHG": "港股科技ETF",
-    "159637.XSHE": "新能源车ETF",
-    "513690.XSHG": "港股红利ETF",
-    "510050.XSHG": "上证50ETF",
+    "512800.XSHG": "银行ETF",
+    "515220.XSHG": "煤炭ETF",
 }
 
 ETF_CATEGORY_MAP = {
-    "510180.XSHG": "A股大盘",
-    "513030.XSHG": "德国股市",
-    "513100.XSHG": "美股",
-    "513520.XSHG": "日本股市",
-    "510410.XSHG": "能源资源",
+    "513330.XSHG": "港股科技",
+    "588000.XSHG": "科创",
+    "512010.XSHG": "医药",
+    "159949.XSHE": "A股成长",
+    "510300.XSHG": "A股大盘",
+    "515790.XSHG": "新能源",
+    "159941.XSHE": "美股",
     "518880.XSHG": "商品",
-    "501018.XSHG": "原油",
-    "159985.XSHE": "农产品",
-    "511090.XSHG": "债券",
-    "159915.XSHE": "A股成长",
-    "588120.XSHG": "科创",
-    "512480.XSHG": "科技",
-    "159851.XSHE": "金融科技",
-    "513020.XSHG": "港股科技",
-    "159637.XSHE": "新能源",
-    "513690.XSHG": "港股红利",
-    "510050.XSHG": "A股大盘",
+    "512800.XSHG": "金融",
+    "515220.XSHG": "周期",
 }
 
 
@@ -390,23 +376,16 @@ def initialize(context):
     log.set_level("order", "error")
 
     g.etf_pool = [
-        "510180.XSHG",  # 上证180ETF
-        "513030.XSHG",  # 德国DAX ETF
-        "513100.XSHG",  # 纳指ETF
-        "513520.XSHG",  # 日经225ETF
-        "510410.XSHG",  # 上证自然资源ETF
+        "513330.XSHG",  # 恒生互联网
+        "588000.XSHG",  # 科创50
+        "512010.XSHG",  # 医药ETF
+        "159949.XSHE",  # 创业板50
+        "510300.XSHG",  # 300ETF
+        "515790.XSHG",  # 光伏ETF
+        "159941.XSHE",  # 纳指ETF
         "518880.XSHG",  # 黄金ETF
-        "501018.XSHG",  # 南方原油（LOF）
-        "159985.XSHE",  # 豆粕ETF
-        "511090.XSHG",  # 30年期国债ETF
-        "159915.XSHE",  # 创业板ETF
-        "588120.XSHG",  # 科创100ETF
-        "512480.XSHG",  # 半导体ETF
-        "159851.XSHE",  # 金融科技ETF
-        "513020.XSHG",  # 港股科技ETF
-        "159637.XSHE",  # 新能源车龙头ETF
-        "513690.XSHG",  # 港股红利ETF
-        "510050.XSHG",  # 上证50ETF
+        "512800.XSHG",  # 银行ETF
+        "515220.XSHG",  # 煤炭ETF
     ]
 
     g.rebalance_weekday = 3
@@ -480,17 +459,17 @@ def initialize(context):
     g.premium_threshold = 5.0
     g.premium_penalty = 0.5
     g.premium_hard_filter = False
-    g.premium_etfs = {"513100.XSHG"}
+    g.premium_etfs = {"159941.XSHG"}
     g.a_share_etfs = {
-        "510180.XSHG",
-        "159915.XSHE",
-        "588120.XSHG",
-        "510050.XSHG",
+        "159949.XSHE",
+        "510300.XSHG",
+        "588000.XSHG",
     }
     g.industry_etfs = {
-        "512480.XSHG",
-        "159851.XSHE",
-        "159637.XSHE",
+        "512010.XSHG",
+        "515790.XSHG",
+        "512800.XSHG",
+        "515220.XSHG",
     }
 
     g.epo_risk_aversion = 8.0
