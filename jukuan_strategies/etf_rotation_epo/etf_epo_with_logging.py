@@ -23,9 +23,9 @@ except Exception:
 
 ETF_NAME_MAP = {
     "518880.XSHG": "黄金ETF",
-    "513600.XSHG": "红利ETF",
+    "513600.XSHG": "恒指ETF",
     "159915.XSHE": "创业板ETF",
-    "513100.XSHG": "恒生ETF",
+    "513100.XSHG": "纳指ETF",
     "159985.XSHE": "创新药ETF",
     "159980.XSHE": "有色ETF",
     "159930.XSHE": "能源ETF",
@@ -38,9 +38,9 @@ ETF_NAME_MAP = {
 
 ETF_CATEGORY_MAP = {
     "518880.XSHG": "商品",
-    "513600.XSHG": "红利",
+    "513600.XSHG": "港股",
     "159915.XSHE": "A股成长",
-    "513100.XSHG": "港股",
+    "513100.XSHG": "美股",
     "159985.XSHE": "医药行业",
     "159980.XSHE": "周期行业",
     "159930.XSHE": "能源行业",
