@@ -4,6 +4,36 @@
 
 # 动量 + 质量因子 -> EPO 权重（动态收缩 + GARCH 锚定）
 # -> 成交拥挤度约束 + 滑动窗口指标
+# -> 多周期动量 + 相对/绝对动量自适应切换（优化版）
+
+# ==============================================================================
+# 策略配置指南
+# ==============================================================================
+#
+# 【配置动量类型】
+#
+# 1. 关闭相对动量（推荐 - 当前配置）:
+#     g.use_multi_period_momentum = True   # 启用多周期动量
+#     g.use_adaptive_momentum = False       # 关闭自适应模式
+#     g.force_absolute_momentum = True      # 强制使用绝对动量
+#     g.enable_relative_momentum = False     # 完全禁用相对动量
+#
+# 2. 启用相对动量（不推荐 - 可能降低收益）:
+#     g.use_multi_period_momentum = True
+#     g.use_adaptive_momentum = True
+#     g.force_absolute_momentum = False
+#     g.enable_relative_momentum = True
+#
+# 3. 使用原版单周期动量（25天: 年化收益×R²）:
+#     g.use_multi_period_momentum = False
+#     g.force_absolute_momentum = False
+#
+# 【配置多周期动量参数】
+#     g.momentum_periods = [20, 40, 60]     # 回看周期
+#     g.momentum_weights = [0.5, 0.3, 0.2]  # 权重配置
+#     g.momentum_use_r2_factor = True       # 使用R²稳定性因子
+#
+# ==============================================================================
 
 from jqdata import *
 import numpy as np
@@ -23,32 +53,22 @@ except Exception:
 
 ETF_NAME_MAP = {
     "518880.XSHG": "黄金ETF",
-    "513600.XSHG": "红利ETF",
     "159915.XSHE": "创业板ETF",
     "513100.XSHG": "恒生ETF",
-    "159985.XSHE": "创新药ETF",
+    "513600.XSHG": "红利ETF",
     "159980.XSHE": "有色ETF",
     "159930.XSHE": "能源ETF",
-    "588000.XSHG": "科创50ETF",
-    "510500.XSHG": "中证500ETF",
-    "512480.XSHG": "半导体ETF",
-    "512880.XSHG": "证券ETF",
-    "511010.XSHG": "5年期国债ETF",
+    "159985.XSHE": "创新药ETF",
 }
 
 ETF_CATEGORY_MAP = {
     "518880.XSHG": "商品",
-    "513600.XSHG": "红利",
     "159915.XSHE": "A股成长",
     "513100.XSHG": "港股",
-    "159985.XSHE": "医药行业",
+    "513600.XSHG": "红利",
     "159980.XSHE": "周期行业",
     "159930.XSHE": "能源行业",
-    "588000.XSHG": "科创",
-    "510500.XSHG": "A股中小盘",
-    "512480.XSHG": "科技",
-    "512880.XSHG": "金融周期",
-    "511010.XSHG": "债券",
+    "159985.XSHE": "医药行业",
 }
 
 
@@ -255,6 +275,21 @@ def _print_metrics_summary(metrics_df):
     log.info(f"📊 平均信号: {avg_signal:.4f}")
     log.info(f"   平均动量: {avg_momentum:.4f} | 平均质量: {avg_quality:.4f}")
 
+    if "momentum_mode" in metrics_df.columns:
+        mode_counts = metrics_df["momentum_mode"].value_counts()
+        log.info(f"")
+        log.info(f"🔀 动量模式分布:")
+        for mode, count in mode_counts.items():
+            if mode == "relative":
+                mode_name = "相对动量"
+            elif mode == "hybrid":
+                mode_name = "混合动量"
+            elif mode == "original":
+                mode_name = "原版动量"
+            else:
+                mode_name = "绝对动量"
+            log.info(f"   {mode_name}: {count}只")
+
 
 def _print_daily_summary(context, positions):
     """每日收盘后打印持仓汇总"""
@@ -380,37 +415,14 @@ def initialize(context):
     log.set_level("order", "error")
 
     g.etf_pool = [
-        "518880.XSHG",  # 黄金ETF
-        "513600.XSHG",  # 红利ETF
-        "159915.XSHE",  # 创业板ETF
-        "513100.XSHG",  # 恒生ETF
-        "159985.XSHE",  # 创新药ETF
-        "159980.XSHE",  # 有色ETF
-        "159930.XSHE",  # 能源ETF
-        "588000.XSHG",  # 科创50ETF
-        "510500.XSHG",  # 中证500ETF
-        "512480.XSHG",  # 半导体ETF
-        "512880.XSHG",  # 证券ETF
-        "511010.XSHG",  # 5年期国债ETF
+        "518880.XSHG",
+        "159915.XSHE",
+        "513100.XSHG",
+        "513600.XSHG",
+        "159980.XSHE",
+        "159930.XSHE",
+        "159985.XSHE",
     ]
-
-    g.rebalance_weekday = 3
-    g.factor_time = "11:00"
-    g.rebalance_time = "11:15"
-
-    g.price_cache = {}
-    g.factor_df = None
-
-    g.etf_cumulative_returns = {}  # 记录每个ETF的累积收益
-    g.etf_trade_history = {}  # 记录每个ETF的交易历史
-    g.etf_holdings_record = {}  # 记录每个ETF的持仓成本
-    g.backtest_start_date = None  # 回测起始日期
-
-    run_weekly(calc_factors, weekday=g.rebalance_weekday, time=g.factor_time)
-    run_weekly(rebalance, weekday=g.rebalance_weekday, time=g.rebalance_time)
-
-    run_daily(daily_summary, "15:00")
-    run_daily(update_etf_cumulative_returns, "15:05")
 
     g.momentum_window = 25
     g.momentum_lookback = 25
@@ -492,6 +504,79 @@ def initialize(context):
     g.dd_penalty_power = 1.0
     g.dd_penalty_floor = 0.6
 
+    g.rebalance_weekday = 3
+    g.factor_time = "11:00"
+    g.rebalance_time = "11:15"
+
+    g.price_cache = {}
+    g.factor_df = None
+
+    run_weekly(calc_factors, weekday=g.rebalance_weekday, time=g.factor_time)
+    run_weekly(rebalance, weekday=g.rebalance_weekday, time=g.rebalance_time)
+
+    run_daily(daily_summary, "15:00")
+
+    g.benchmark_etf = "000300.XSHG"
+
+    # ======================================================================
+    # 多周期动量参数配置（新增）
+    # ======================================================================
+    # 是否启用多周期动量计算（替代原版单周期25天动量）
+    # True: 使用多周期加权动量
+    # False: 使用原版单周期动量 (25天: 年化收益 × R²)
+    g.use_multi_period_momentum = True
+
+    # 多周期动量的回看周期配置
+    # 默认: [20, 40, 60] = 20天(短期) + 40天(中期) + 60天(长期)
+    # 注意: 总数据需求 = max(periods) + 5 = 65天
+    g.momentum_periods = [20, 40, 60]
+
+    # 各周期权重配置（必须与periods长度一致，权重和=1.0）
+    # 推荐配置:
+    #   [0.5, 0.3, 0.2] -> 短期为主，响应较快
+    #   [0.4, 0.4, 0.2] -> 均衡配置
+    #   [0.6, 0.25, 0.15] -> 更激进，短期权重更高
+    g.momentum_weights = [0.5, 0.3, 0.2]
+
+    # 是否在动量计算中引入R²稳定性因子
+    # True: 动量 = 收益率 × R²（确保趋势稳定）
+    # False: 动量 = 收益率（可能选中波动大的标的）
+    g.momentum_use_r2_factor = True
+
+    # ======================================================================
+    # 相对动量/自适应动量参数配置（新增）
+    # ======================================================================
+    # 是否启用自适应动量模式（根据市场环境切换绝对/相对动量）
+    # True: 根据市场环境自动选择动量类型
+    # False: 强制使用绝对动量（推荐：关闭相对动量）
+    g.use_adaptive_momentum = False
+
+    # 自适应动量模式下的市场环境检测周期（天数）
+    # 较短周期响应更快，但可能更敏感
+    # 推荐: 20天（20个交易日约1个月）
+    g.market_regime_window = 20
+
+    # 当 use_adaptive_momentum=False 时，是否强制使用绝对动量
+    # True: 强制使用绝对动量（推荐：True，关闭相对动量）
+    # False: 使用原版单周期动量
+    g.force_absolute_momentum = True
+
+    # 相对动量开关（如果想完全禁用相对动量相关逻辑，设置以下参数）
+    g.enable_relative_momentum = False
+
+    # 相对动量的混合权重（当自适应模式开启时使用）
+    # 格式: [绝对动量权重, 相对动量权重]
+    # 例如 [0.7, 0.3] 表示 70%绝对动量 + 30%相对动量
+    g.momentum_mix_weights = [0.7, 0.3]
+
+    # 市场环境切换阈值
+    # 强劲牛市阈值: 20日涨幅 > strong_bull_threshold 时，100%使用绝对动量
+    # 牛市阈值: 20日涨幅 > bull_threshold 时，增加绝对动量权重
+    # 熊市阈值: 20日涨幅 < bear_threshold 时，增加相对动量权重
+    g.strong_bull_threshold = 0.08  # 8%
+    g.bull_threshold = 0.03  # 3%
+    g.bear_threshold = -0.05  # -5%
+
 
 def calc_factors(context):
     g.price_cache = {}
@@ -509,6 +594,7 @@ def calc_factors(context):
             g.cov_window,
             g.volume_long_window,
             g.garch_window,
+            120,
         )
         + 5
     )
@@ -540,7 +626,7 @@ def calc_factors(context):
             turnover = data["money"].fillna(0).values
         else:
             turnover = data["volume"].fillna(0).values
-        metrics[etf] = _compute_metrics(close, turnover)
+        metrics[etf] = _compute_metrics(close, turnover, etf)
 
     metrics_df = pd.DataFrame(metrics).T
     if metrics_df.empty:
@@ -634,7 +720,7 @@ def calc_factors(context):
     g.factor_df = metrics_df
 
     _print_header(f"📊 因子计算完成 - {context.current_dt.strftime('%Y-%m-%d')}")
-    _print_factor_table(metrics_df, top_n=len(metrics_df))
+    _print_factor_table(metrics_df, top_n=len(g.etf_pool))
     _print_metrics_summary(metrics_df)
 
 
@@ -769,8 +855,6 @@ def rebalance(context):
 
     _execute_orders(context, target_weights)
 
-    print_etf_cumulative_returns_summary(context)
-
 
 def _execute_orders(context, target_weights):
     current_data = get_current_data()
@@ -822,131 +906,6 @@ def daily_summary(context):
     _print_daily_summary(context, positions)
 
 
-def update_etf_cumulative_returns(context):
-    """
-    每日收盘后更新ETF累积收益数据
-    跟踪每个ETF的持仓成本和当前收益
-    """
-    positions = context.portfolio.positions
-    current_date = context.current_dt.strftime("%Y-%m-%d")
-
-    if g.backtest_start_date is None:
-        g.backtest_start_date = current_date
-
-    for etf, pos in positions.items():
-        current_price = pos.price
-        avg_cost = pos.avg_cost
-        shares = pos.total_amount
-        market_value = shares * current_price
-
-        if etf not in g.etf_cumulative_returns:
-            g.etf_cumulative_returns[etf] = {
-                "first_cost": avg_cost,
-                "first_shares": shares,
-                "start_date": current_date,
-                "total_pnl": 0,
-                "total_return": 0,
-                "trade_count": 0,
-            }
-
-        record = g.etf_cumulative_returns[etf]
-        if shares > 0:
-            pnl = (current_price - avg_cost) * shares
-            ret = (current_price - avg_cost) / avg_cost if avg_cost > 0 else 0
-            record["total_pnl"] = pnl
-            record["total_return"] = ret
-            record["current_price"] = current_price
-            record["current_shares"] = shares
-
-
-def print_etf_cumulative_returns_summary(context):
-    """
-    打印所有ETF的累积收益汇总
-    可在调仓时或回测结束时调用
-    """
-    if not g.etf_cumulative_returns:
-        return
-
-    _print_header("📈 ETF累积收益监控")
-
-    log.info(f"回测起始: {g.backtest_start_date}")
-    log.info(f"当前日期: {context.current_dt.strftime('%Y-%m-%d')}")
-    log.info("")
-
-    table = PrettyTable(
-        [
-            "ETF代码",
-            "ETF名称",
-            "分类",
-            "当前价格",
-            "持仓天数",
-            "总盈亏",
-            "累积收益",
-            "交易次数",
-        ]
-    )
-    table.hrules = prettytable.ALL
-    table.align = "l"
-    table.align = "r"
-
-    sorted_etfs = sorted(
-        g.etf_cumulative_returns.items(),
-        key=lambda x: x[1].get("total_return", 0),
-        reverse=True,
-    )
-
-    total_pnl = 0
-    for etf, record in sorted_etfs:
-        if record.get("current_shares", 0) == 0:
-            continue
-
-        current_price = record.get("current_price", 0)
-        total_pnl += record.get("total_pnl", 0)
-        trade_count = record.get("trade_count", 0)
-
-        pnl_str = f"¥{record.get('total_pnl', 0):+,.0f}"
-        ret_str = f"{record.get('total_return', 0) * 100:+.2f}%"
-
-        if record.get("total_return", 0) > 0.05:
-            ret_str = f"🟢 {ret_str}"
-        elif record.get("total_return", 0) < -0.05:
-            ret_str = f"🔴 {ret_str}"
-        else:
-            ret_str = f"🟡 {ret_str}"
-
-        start_date = record.get("start_date", "")
-        try:
-            from datetime import datetime
-
-            start = datetime.strptime(start_date, "%Y-%m-%d")
-            end = datetime.strptime(context.current_dt.strftime("%Y-%m-%d"), "%Y-%m-%d")
-            hold_days = (end - start).days
-        except:
-            hold_days = 0
-
-        table.add_row(
-            [
-                _format_etf_code(etf),
-                _get_etf_name(etf),
-                _get_etf_category(etf),
-                f"¥{current_price:.3f}" if current_price else "N/A",
-                f"{hold_days}天",
-                pnl_str,
-                ret_str,
-                f"{trade_count}次",
-            ]
-        )
-
-    log.info(f"\n{table}\n")
-
-    if total_pnl > 0:
-        log.info(f"💰 累计总盈亏: 🟢 ¥{total_pnl:,.0f}")
-    else:
-        log.info(f"💰 累计总盈亏: 🔴 ¥{total_pnl:,.0f}")
-
-    log.info("")
-
-
 def _build_returns_df(etfs):
     series_list = []
     for etf in etfs:
@@ -985,7 +944,15 @@ def _epo_weights(returns_df, signals, risk_aversion, shrinkage):
     return _normalize(raw)
 
 
-def _compute_metrics(close, volume):
+def _compute_metrics(close, volume, etf_code=None):
+    """
+    计算ETF的多维因子指标
+
+    Args:
+        close: 收盘价序列
+        volume: 成交量序列
+        etf_code: ETF代码，用于选择合适的基准
+    """
     quality_prices = close[-g.quality_lookback :]
     momentum_prices = close[-g.momentum_lookback :]
     quality_volume = volume[-g.quality_lookback :]
@@ -1018,9 +985,7 @@ def _compute_metrics(close, volume):
         quality_volume, g.quality_window, _calc_volume_stability
     )
 
-    momentum = _rolling_metric_on_prices(
-        momentum_prices, g.momentum_window, _calc_momentum
-    )
+    momentum, momentum_mode = _calc_adaptive_momentum_with_etf(close, etf_code)
 
     volume_ratio = _calc_volume_ratio(volume)
     trend_ok, trend_dd = _calc_trend_filter(close)
@@ -1034,6 +999,7 @@ def _compute_metrics(close, volume):
         "log_return": log_return,
         "r2": r2_q,
         "momentum": momentum,
+        "momentum_mode": momentum_mode,
         "volume_ratio": volume_ratio,
         "trend_ok": trend_ok,
         "trend_dd": trend_dd,
@@ -1149,6 +1115,295 @@ def _calc_momentum(prices):
         return 0.0
     log_prices = np.log(prices)
     return _calc_annualized_return(log_prices) * _calc_r2(log_prices)
+
+
+def _calc_relative_momentum(prices, benchmark_prices):
+    """计算相对动量：ETF相对于基准的超额收益趋势"""
+    if len(prices) < 20 or len(benchmark_prices) < 20:
+        return 0.0
+
+    prices = np.array(prices)
+    benchmark_prices = np.array(benchmark_prices)
+
+    etf_ret = (prices[-1] / prices[0]) ** (252 / len(prices)) - 1
+    bench_ret = (benchmark_prices[-1] / benchmark_prices[0]) ** (
+        252 / len(benchmark_prices)
+    ) - 1
+
+    relative_ret = etf_ret - bench_ret
+
+    etf_log = np.log(prices)
+    bench_log = np.log(benchmark_prices)
+    etf_r2 = _calc_r2(etf_log)
+    bench_r2 = _calc_r2(bench_log)
+
+    combined_r2 = (etf_r2 + bench_r2) / 2
+
+    return relative_ret * combined_r2
+
+
+def _calc_multi_period_momentum(
+    close_prices, periods=None, weights=None, use_r2_factor=None
+):
+    """
+    计算多周期加权动量（可配置版本）
+
+    参数说明：
+    ---------
+    close_prices : array-like
+        价格序列
+    periods : list, optional
+        回看周期列表，默认使用 g.momentum_periods
+    weights : list, optional
+        各周期权重，默认使用 g.momentum_weights
+    use_r2_factor : bool, optional
+        是否使用R²因子，默认使用 g.momentum_use_r2_factor
+
+    权重配置建议：
+    ------------
+    g.momentum_periods = [20, 40, 60]  # 短/中/长三周期
+    g.momentum_weights = [0.5, 0.3, 0.2]  # 短期权重更高
+
+    优势：
+    -----
+    1. 多周期平滑，避免单周期噪音
+    2. 短期权重高，响应较快
+    3. R²因子确保趋势稳定性
+
+    使用方法：
+    --------
+    # 使用配置文件设置（推荐）
+    momentum = _calc_multi_period_momentum(close_prices)
+
+    # 自定义参数
+    momentum = _calc_multi_period_momentum(
+        close_prices,
+        periods=[15, 30, 45],
+        weights=[0.6, 0.3, 0.1],
+        use_r2_factor=True
+    )
+    """
+    if periods is None:
+        periods = getattr(g, "momentum_periods", [20, 40, 60])
+    if weights is None:
+        weights = getattr(g, "momentum_weights", [0.5, 0.3, 0.2])
+    if use_r2_factor is None:
+        use_r2_factor = getattr(g, "momentum_use_r2_factor", True)
+
+    prices = np.array(close_prices, dtype=float)
+    if len(prices) < 2 or np.any(prices <= 0):
+        return 0.0
+
+    total_weight = 0.0
+    weighted_momentum = 0.0
+
+    for period, weight in zip(periods, weights):
+        if len(prices) >= period:
+            period_prices = prices[-period:]
+            log_prices = np.log(period_prices)
+
+            ret = (prices[-1] / prices[-period]) ** (252 / period) - 1
+
+            if use_r2_factor:
+                r2 = _calc_r2(log_prices)
+                weighted_momentum += ret * r2 * weight
+            else:
+                weighted_momentum += ret * weight
+            total_weight += weight
+
+    if total_weight == 0:
+        return 0.0
+
+    return weighted_momentum / total_weight
+
+
+def _calc_adaptive_momentum_with_etf(close_prices, etf_code=None):
+    """
+    动量计算主入口（支持多周期 + 自适应模式配置）
+
+    参数配置说明：
+    -------------
+
+    关闭相对动量（推荐配置）:
+        g.use_multi_period_momentum = True   # 启用多周期动量
+        g.use_adaptive_momentum = False       # 关闭自适应模式
+        g.force_absolute_momentum = True      # 强制使用绝对动量
+        g.enable_relative_momentum = False     # 完全禁用相对动量
+
+    启用相对动量（不推荐）:
+        g.use_multi_period_momentum = True
+        g.use_adaptive_momentum = True
+        g.enable_relative_momentum = True
+
+    使用原版单周期动量:
+        g.use_multi_period_momentum = False
+        g.force_absolute_momentum = False
+
+    动量模式返回值：
+    --------------
+    (momentum_value, mode_name)
+    mode_name: "absolute" | "relative" | "hybrid" | "original"
+
+    Returns:
+        tuple: (动量值, 动量模式)
+    """
+    # 获取配置参数
+    use_multi_period = getattr(g, "use_multi_period_momentum", True)
+    use_adaptive = getattr(g, "use_adaptive_momentum", False)
+    force_absolute = getattr(g, "force_absolute_momentum", True)
+    enable_relative = getattr(g, "enable_relative_momentum", False)
+
+    # 模式1: 强制绝对动量（关闭相对动量）
+    if force_absolute:
+        if use_multi_period:
+            momentum = _calc_multi_period_momentum(close_prices)
+            return momentum, "absolute"
+        else:
+            momentum = _calc_momentum(close_prices)
+            return momentum, "original"
+
+    # 模式2: 使用自适应动量（根据市场环境切换）
+    if use_adaptive and enable_relative:
+        return _calc_adaptive_momentum_internal(close_prices, etf_code)
+
+    # 模式3: 使用原版单周期动量
+    momentum = _calc_momentum(close_prices)
+    return momentum, "original"
+
+
+def _calc_adaptive_momentum_internal(close_prices, etf_code=None):
+    """
+    内部函数：自适应动量计算（根据市场环境切换绝对/相对动量）
+
+    说明：
+    -----
+    此函数仅在 g.use_adaptive_momentum=True 且 g.enable_relative_momentum=True 时调用
+
+    市场环境判断（基于20日涨幅）：
+    - 强劲牛市 (>8%): 100%绝对动量
+    - 牛市 (>3%): 70%绝对 + 30%相对
+    - 熊市 (<-5%): 40%绝对 + 60%相对
+    - 中性: 100%绝对动量
+    """
+    benchmark_prices = None
+    if etf_code == "518880.XSHG":
+        benchmark_prices = None
+    elif etf_code == "513100.XSHG":
+        try:
+            benchmark_data = get_price(
+                "HSI",
+                count=120,
+                end_date=context.previous_date
+                if hasattr(context, "previous_date")
+                else None,
+                frequency="daily",
+                fields=["close"],
+            )
+            if benchmark_data is not None and not benchmark_data.empty:
+                benchmark_prices = benchmark_data["close"].values
+        except:
+            benchmark_prices = None
+    else:
+        try:
+            benchmark_data = get_price(
+                g.benchmark_etf,
+                count=120,
+                end_date=context.previous_date
+                if hasattr(context, "previous_date")
+                else None,
+                frequency="daily",
+                fields=["close"],
+            )
+            if benchmark_data is not None and not benchmark_data.empty:
+                benchmark_prices = benchmark_data["close"].values
+        except:
+            benchmark_prices = None
+
+    abs_momentum = _calc_multi_period_momentum(close_prices)
+
+    if benchmark_prices is not None and len(benchmark_prices) >= 60:
+        rel_momentum = _calc_relative_momentum(
+            close_prices,
+            benchmark_prices[-len(close_prices) :]
+            if len(benchmark_prices) > len(close_prices)
+            else benchmark_prices,
+        )
+    else:
+        rel_momentum = 0
+
+    market_regime = _detect_market_regime_v2(
+        close_prices, benchmark_prices if benchmark_prices is not None else np.ones(120)
+    )
+
+    mix_weights = getattr(g, "momentum_mix_weights", [0.7, 0.3])
+
+    if market_regime == "strong_bull":
+        return abs_momentum, "absolute"
+    elif market_regime == "bull":
+        return mix_weights[0] * abs_momentum + mix_weights[1] * rel_momentum, "hybrid"
+    elif market_regime == "bear":
+        return (1 - mix_weights[1]) * abs_momentum + mix_weights[
+            1
+        ] * rel_momentum, "relative"
+    else:
+        return abs_momentum, "absolute"
+
+
+def _calc_adaptive_momentum(close_prices, benchmark_prices=None):
+    """兼容旧版本接口"""
+    return _calc_adaptive_momentum_with_etf(close_prices, None)
+
+
+def _detect_market_regime_v2(prices, benchmark_prices):
+    """
+    优化版市场环境检测（缩短检测周期）
+
+    Returns:
+        "strong_bull": 强劲牛市 - 纯绝对动量
+        "bull": 牛市 - 混合
+        "neutral": 中性 - 纯绝对动量
+        "bear": 熊市 - 相对动量
+    """
+    prices = np.array(prices)
+
+    if len(prices) < 20:
+        return "neutral"
+
+    ret_20d = prices[-1] / prices[-20] - 1
+
+    if ret_20d > 0.08:
+        return "strong_bull"
+    elif ret_20d > 0.03:
+        return "bull"
+    elif ret_20d < -0.05:
+        return "bear"
+    else:
+        return "neutral"
+
+
+def _detect_market_regime(prices, benchmark_prices):
+    """兼容旧版本"""
+    return _detect_market_regime_v2(prices, benchmark_prices)
+
+    etf_60d = prices[-1] / prices[-60] - 1
+    bench_60d = benchmark_prices[-1] / benchmark_prices[-60] - 1
+
+    if etf_60d > 0.05 and bench_60d > 0.03:
+        return "bull"
+    elif etf_60d < -0.05 or bench_60d < -0.03:
+        return "bear"
+    else:
+        return "neutral"
+
+
+def _calc_volume_ratio(volume):
+    if len(volume) < g.volume_long_window:
+        return 1.0
+    short_avg = np.mean(volume[-g.volume_short_window :])
+    long_avg = np.mean(volume[-g.volume_long_window :])
+    if long_avg <= 0:
+        return 1.0
+    return short_avg / long_avg
 
 
 def _rolling_metric_on_prices(prices, window, func):

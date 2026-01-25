@@ -4,361 +4,16 @@
 
 # 动量 + 质量因子 -> EPO 权重（动态收缩 + GARCH 锚定）
 # -> 成交拥挤度约束 + 滑动窗口指标
-
 from jqdata import *
 import numpy as np
 import pandas as pd
 import math
-from prettytable import PrettyTable
-import prettytable
-
 try:
     from arch import arch_model
-
     _ARCH_AVAILABLE = True
 except Exception:
     arch_model = None
     _ARCH_AVAILABLE = False
-
-
-ETF_NAME_MAP = {
-    "518880.XSHG": "黄金ETF",
-    "513600.XSHG": "红利ETF",
-    "159915.XSHE": "创业板ETF",
-    "513100.XSHG": "恒生ETF",
-    "159985.XSHE": "创新药ETF",
-    "159980.XSHE": "有色ETF",
-    "159930.XSHE": "能源ETF",
-    "588000.XSHG": "科创50ETF",
-    "510500.XSHG": "中证500ETF",
-    "512480.XSHG": "半导体ETF",
-    "512880.XSHG": "证券ETF",
-    "511010.XSHG": "5年期国债ETF",
-}
-
-ETF_CATEGORY_MAP = {
-    "518880.XSHG": "商品",
-    "513600.XSHG": "红利",
-    "159915.XSHE": "A股成长",
-    "513100.XSHG": "港股",
-    "159985.XSHE": "医药行业",
-    "159980.XSHE": "周期行业",
-    "159930.XSHE": "能源行业",
-    "588000.XSHG": "科创",
-    "510500.XSHG": "A股中小盘",
-    "512480.XSHG": "科技",
-    "512880.XSHG": "金融周期",
-    "511010.XSHG": "债券",
-}
-
-
-def _format_etf_code(etf_code):
-    """美化ETF代码显示"""
-    name = ETF_NAME_MAP.get(etf_code, "ETF")
-    code = etf_code.split(".")[0]
-    return f"{code}({name})"
-
-
-def _get_etf_name(etf_code):
-    """获取ETF名称"""
-    return ETF_NAME_MAP.get(etf_code, etf_code)
-
-
-def _get_etf_category(etf_code):
-    """获取ETF分类"""
-    return ETF_CATEGORY_MAP.get(etf_code, "其他")
-
-
-def _get_trend_emoji(trend_ok):
-    """获取趋势状态表情"""
-    return "✅ 上涨趋势" if trend_ok else "⚠️ 趋势不佳"
-
-
-def _get_signal_bar(signal, max_signal=1.0):
-    """生成信号强度进度条"""
-    if pd.isna(signal) or signal <= 0:
-        return "░░░░░░░░░░"
-    ratio = min(signal / max_signal, 1.0) if max_signal > 0 else 0
-    filled = int(ratio * 10)
-    return "█" * filled + "░" * (10 - filled)
-
-
-def _get_pnl_emoji(pnl_ratio):
-    """根据盈亏比例返回表情"""
-    if pnl_ratio > 0.1:
-        return "🤑 大涨"
-    elif pnl_ratio > 0.05:
-        return "😄 上涨"
-    elif pnl_ratio > 0:
-        return "📈 小涨"
-    elif pnl_ratio > -0.05:
-        return "📉 小跌"
-    elif pnl_ratio > -0.1:
-        return "😟 大跌"
-    else:
-        return "🤬 暴跌"
-
-
-def _print_header(title, width=70):
-    """打印分隔标题"""
-    log.info("")
-    log.info(f"{'=' * width}")
-    log.info(f"  {title}")
-    log.info(f"{'=' * width}")
-
-
-def _print_subheader(subtitle):
-    """打印副标题"""
-    log.info(f"─── {subtitle} ───")
-
-
-def _print_factor_table(factor_df, top_n=7):
-    """使用PrettyTable打印因子得分排名"""
-    if factor_df is None or factor_df.empty:
-        return
-
-    _print_header("📊 因子信号排名")
-
-    table = PrettyTable(
-        [
-            "排名",
-            "ETF代码",
-            "ETF名称",
-            "综合信号",
-            "动量分",
-            "质量分",
-            "放量比",
-            "趋势",
-        ]
-    )
-    table.hrules = prettytable.ALL
-    table.align = "r"
-    table.align = "l"
-
-    sorted_df = factor_df.sort_values("signal", ascending=False).head(top_n)
-
-    for rank, (etf, row) in enumerate(sorted_df.iterrows(), 1):
-        momentum_score = row.get("momentum_score", row.get("momentum_z", 0))
-        quality_score = row.get("quality_score", 0)
-        signal = row.get("signal", 0)
-        volume_ratio = row.get("volume_ratio", 1.0)
-        trend_ok = row.get("trend_ok", True)
-
-        trend_emoji = "✅" if trend_ok else "⚠️"
-
-        table.add_row(
-            [
-                f"#{rank}",
-                _format_etf_code(etf),
-                _get_etf_name(etf),
-                f"{signal:.4f}",
-                f"{momentum_score:.3f}",
-                f"{quality_score:.3f}",
-                f"{volume_ratio:.2f}x",
-                trend_emoji,
-            ]
-        )
-
-    log.info(f"\n{table}\n")
-
-
-def _print_weight_table(target_weights, factor_df, total_value):
-    """使用PrettyTable打印目标权重"""
-    if not target_weights or factor_df is None:
-        return
-
-    _print_header("🎯 调仓目标")
-
-    table = PrettyTable(
-        [
-            "ETF代码",
-            "ETF名称",
-            "分类",
-            "目标权重",
-            "预估金额",
-            "信号得分",
-            "动量分",
-            "质量分",
-            "放量比",
-            "趋势",
-        ]
-    )
-    table.hrules = prettytable.ALL
-    table.align = "l"
-    table.align = "r"
-
-    sorted_weights = dict(
-        sorted(target_weights.items(), key=lambda x: x[1], reverse=True)
-    )
-
-    for etf, weight in sorted_weights.items():
-        if etf not in factor_df.index:
-            continue
-
-        row = factor_df.loc[etf]
-        est_amount = total_value * weight
-        momentum_score = row.get("momentum_score", row.get("momentum_z", 0))
-        quality_score = row.get("quality_score", 0)
-        signal = row.get("signal", 0)
-        volume_ratio = row.get("volume_ratio", 1.0)
-        trend_ok = row.get("trend_ok", True)
-        trend_emoji = "✅" if trend_ok else "⚠️"
-
-        table.add_row(
-            [
-                _format_etf_code(etf),
-                _get_etf_name(etf),
-                _get_etf_category(etf),
-                f"{weight * 100:.1f}%",
-                f"¥{est_amount:,.0f}",
-                f"{signal:.4f}",
-                f"{momentum_score:.3f}",
-                f"{quality_score:.3f}",
-                f"{volume_ratio:.2f}x",
-                trend_emoji,
-            ]
-        )
-
-    log.info(f"\n📈 总资产: ¥{total_value:,.2f}")
-    log.info(f"\n{table}\n")
-
-    weight_summary = ", ".join(
-        [f"{_get_etf_name(k)}: {v * 100:.1f}%" for k, v in sorted_weights.items()]
-    )
-    log.info(f"📋 权重分配: {weight_summary}")
-
-
-def _print_metrics_summary(metrics_df):
-    """打印关键指标汇总"""
-    if metrics_df is None or metrics_df.empty:
-        return
-
-    _print_header("📈 策略指标监控")
-
-    top_etf = metrics_df["signal"].idxmax()
-    best_signal = metrics_df.loc[top_etf, "signal"]
-    best_momentum = metrics_df.loc[top_etf, "momentum"]
-    best_quality = metrics_df.loc[top_etf, "quality_score"]
-
-    worst_etf = metrics_df["signal"].idxmin()
-    worst_signal = metrics_df.loc[worst_etf, "signal"]
-
-    avg_signal = metrics_df["signal"].mean()
-    avg_momentum = metrics_df["momentum"].mean()
-    avg_quality = metrics_df["quality_score"].mean()
-
-    log.info(f"🏆 最佳信号: {_get_etf_name(top_etf)} = {best_signal:.4f}")
-    log.info(f"   动量得分: {best_momentum:.4f} | 质量得分: {best_quality:.4f}")
-    log.info(f"")
-    log.info(f"📉 最差信号: {_get_etf_name(worst_etf)} = {worst_signal:.4f}")
-    log.info(f"")
-    log.info(f"📊 平均信号: {avg_signal:.4f}")
-    log.info(f"   平均动量: {avg_momentum:.4f} | 平均质量: {avg_quality:.4f}")
-
-
-def _print_daily_summary(context, positions):
-    """每日收盘后打印持仓汇总"""
-    _print_header(f"📅 每日收盘汇总 - {context.current_dt.strftime('%Y-%m-%d')}")
-
-    total_value = context.portfolio.total_value
-
-    if not positions:
-        log.info(f"🚤 当前总资产: ¥{total_value:,.2f}  (空仓)")
-        return
-
-    table = PrettyTable(
-        [
-            "ETF代码",
-            "ETF名称",
-            "持仓数量",
-            "持仓成本",
-            "当前价格",
-            "盈亏比例",
-            "盈亏金额",
-            "市值",
-            "仓位占比",
-        ]
-    )
-    table.hrules = prettytable.ALL
-    table.align = "l"
-    table.align = "r"
-
-    total_market_value = 0
-    for etf, pos in positions.items():
-        current_price = pos.price
-        avg_cost = pos.avg_cost
-        shares = pos.total_amount
-        market_value = shares * current_price
-        total_market_value += market_value
-
-        pnl_ratio = (current_price - avg_cost) / avg_cost if avg_cost > 0 else 0
-        pnl_amount = (current_price - avg_cost) * shares
-        weight = market_value / total_value
-
-        pnl_emoji = _get_pnl_emoji(pnl_ratio)
-        pnl_str = f"{pnl_emoji} {pnl_ratio * 100:+.2f}%"
-
-        table.add_row(
-            [
-                _format_etf_code(etf),
-                _get_etf_name(etf),
-                f"{shares:,}",
-                f"¥{avg_cost:.3f}",
-                f"¥{current_price:.3f}",
-                pnl_str,
-                f"¥{pnl_amount:+,.0f}",
-                f"¥{market_value:,.0f}",
-                f"{weight * 100:.1f}%",
-            ]
-        )
-
-    log.info(f"\n💰 总资产: ¥{total_value:,.2f}")
-    log.info(f"📊 持仓市值: ¥{total_market_value:,.2f}")
-    log.info(f"\n{table}\n")
-
-    category_weights = {}
-    for etf in positions.keys():
-        category = _get_etf_category(etf)
-        weight = positions[etf].total_amount * positions[etf].price / total_value
-        category_weights[category] = category_weights.get(category, 0) + weight
-
-    cat_str = ", ".join(
-        [
-            f"{k}: {v * 100:.1f}%"
-            for k, v in sorted(
-                category_weights.items(), key=lambda x: x[1], reverse=True
-            )
-        ]
-    )
-    log.info(f"📈 分类配置: {cat_str}")
-
-
-def _print_rebalance_summary(changes):
-    """打印调仓变更汇总"""
-    if not changes:
-        log.info("\n📋 本次调仓: 无变更")
-        return
-
-    buys = [etf for etf, change in changes.items() if change == "BUY"]
-    sells = [etf for etf, change in changes.items() if change == "SELL"]
-    holds = [etf for etf, change in changes.items() if change == "HOLD"]
-
-    _print_header("🔄 调仓执行摘要")
-
-    if buys:
-        log.info(f"\n🟢 买入 ({len(buys)}只):")
-        for etf in buys:
-            log.info(f"   + {_format_etf_code(etf)} ({_get_etf_name(etf)})")
-
-    if sells:
-        log.info(f"\n🔴 卖出 ({len(sells)}只):")
-        for etf in sells:
-            log.info(f"   - {_format_etf_code(etf)} ({_get_etf_name(etf)})")
-
-    if holds:
-        log.info(f"\n🟡 持有 ({len(holds)}只):")
-        hold_str = ", ".join([_get_etf_name(e) for e in holds])
-        log.info(f"   = {hold_str}")
 
 
 def initialize(context):
@@ -377,41 +32,19 @@ def initialize(context):
         type="fund",
     )
     log.set_level("system", "error")
-    log.set_level("order", "error")
 
+    # ETF 池来自实盘日志的推断。
     g.etf_pool = [
-        "518880.XSHG",  # 黄金ETF
-        "513600.XSHG",  # 红利ETF
-        "159915.XSHE",  # 创业板ETF
-        "513100.XSHG",  # 恒生ETF
-        "159985.XSHE",  # 创新药ETF
-        "159980.XSHE",  # 有色ETF
-        "159930.XSHE",  # 能源ETF
-        "588000.XSHG",  # 科创50ETF
-        "510500.XSHG",  # 中证500ETF
-        "512480.XSHG",  # 半导体ETF
-        "512880.XSHG",  # 证券ETF
-        "511010.XSHG",  # 5年期国债ETF
+        "518880.XSHG",
+        "159915.XSHE",
+        "513100.XSHG",
+        "513600.XSHG",
+        "159980.XSHE",
+        "159930.XSHE",
+        "159985.XSHE",
     ]
 
-    g.rebalance_weekday = 3
-    g.factor_time = "11:00"
-    g.rebalance_time = "11:15"
-
-    g.price_cache = {}
-    g.factor_df = None
-
-    g.etf_cumulative_returns = {}  # 记录每个ETF的累积收益
-    g.etf_trade_history = {}  # 记录每个ETF的交易历史
-    g.etf_holdings_record = {}  # 记录每个ETF的持仓成本
-    g.backtest_start_date = None  # 回测起始日期
-
-    run_weekly(calc_factors, weekday=g.rebalance_weekday, time=g.factor_time)
-    run_weekly(rebalance, weekday=g.rebalance_weekday, time=g.rebalance_time)
-
-    run_daily(daily_summary, "15:00")
-    run_daily(update_etf_cumulative_returns, "15:05")
-
+    # 窗口参数
     g.momentum_window = 25
     g.momentum_lookback = 25
     g.quality_window = 25
@@ -421,6 +54,7 @@ def initialize(context):
     g.volume_short_window = 5
     g.volume_long_window = 20
 
+    # 因子混合参数
     g.score_weight_momentum = 0.3
     g.score_weight_quality = 0.7
     g.anchor_weight = 0.1
@@ -467,21 +101,23 @@ def initialize(context):
     g.premium_hard_filter = False
     g.premium_etfs = {"513100.XSHG"}
     g.a_share_etfs = {
-        "159915.XSHE",
-        "159930.XSHE",
-        "159980.XSHE",
+        "159915.XSHE",  # 创业板
+        "159930.XSHE",  # 能源（行业）
+        "159980.XSHE",  # 有色（行业）
     }
     g.industry_etfs = {
         "159930.XSHE",
         "159980.XSHE",
     }
 
+    # EPO 参数
     g.epo_risk_aversion = 8.0
     g.epo_shrinkage = 0.2
     g.use_dynamic_shrinkage = True
     g.shrinkage_floor = 0.05
     g.shrinkage_cap = 0.6
 
+    # 成交拥挤度惩罚
     g.volume_ratio_threshold = 1.6
     g.volume_penalty_power = 0.8
     g.use_relative_crowding = True
@@ -491,6 +127,17 @@ def initialize(context):
     g.dd_penalty_threshold = 0.05
     g.dd_penalty_power = 1.0
     g.dd_penalty_floor = 0.6
+
+    # 每周调仓（周三）
+    g.rebalance_weekday = 3
+    g.factor_time = "11:00"
+    g.rebalance_time = "11:15"
+
+    g.price_cache = {}
+    g.factor_df = None
+
+    run_weekly(calc_factors, weekday=g.rebalance_weekday, time=g.factor_time)
+    run_weekly(rebalance, weekday=g.rebalance_weekday, time=g.rebalance_time)
 
 
 def calc_factors(context):
@@ -552,9 +199,7 @@ def calc_factors(context):
         metrics_df["sharpe_score"] = _rank_score(metrics_df["sharpe"], True)
         metrics_df["mdd_score"] = _rank_score(metrics_df["max_drawdown"], False)
         metrics_df["vol_score"] = _rank_score(metrics_df["volatility"], False)
-        metrics_df["vol_stability_score"] = _rank_score(
-            metrics_df["vol_stability"], False
-        )
+        metrics_df["vol_stability_score"] = _rank_score(metrics_df["vol_stability"], False)
         metrics_df["volume_stability_score"] = _rank_score(
             metrics_df["volume_stability"], False
         )
@@ -577,9 +222,9 @@ def calc_factors(context):
             + g.score_weight_quality * metrics_df["quality_score"]
         )
         if g.industry_penalty < 1:
-            metrics_df.loc[metrics_df.index.isin(g.industry_etfs), "signal"] *= (
-                g.industry_penalty
-            )
+            metrics_df.loc[
+                metrics_df.index.isin(g.industry_etfs), "signal"
+            ] *= g.industry_penalty
         if g.trend_penalty < 1:
             metrics_df.loc[~metrics_df["trend_ok"], "signal"] *= g.trend_penalty
     else:
@@ -607,9 +252,9 @@ def calc_factors(context):
             + g.score_weight_quality * metrics_df["quality_score"]
         )
         if g.industry_penalty < 1:
-            metrics_df.loc[metrics_df.index.isin(g.industry_etfs), "signal"] *= (
-                g.industry_penalty
-            )
+            metrics_df.loc[
+                metrics_df.index.isin(g.industry_etfs), "signal"
+            ] *= g.industry_penalty
         if g.trend_penalty < 1:
             metrics_df.loc[~metrics_df["trend_ok"], "signal"] *= g.trend_penalty
 
@@ -632,10 +277,11 @@ def calc_factors(context):
             metrics_df.loc[~metrics_df["premium_ok"], "signal"] *= g.premium_penalty
 
     g.factor_df = metrics_df
-
-    _print_header(f"📊 因子计算完成 - {context.current_dt.strftime('%Y-%m-%d')}")
-    _print_factor_table(metrics_df, top_n=len(metrics_df))
-    _print_metrics_summary(metrics_df)
+    log.info(
+        "signal top: {}".format(
+            metrics_df["signal"].sort_values(ascending=False).head(5).to_dict()
+        )
+    )
 
 
 def rebalance(context):
@@ -645,8 +291,9 @@ def rebalance(context):
 
     factor_df = g.factor_df
     if g.use_rank_scoring:
-        mask = (factor_df["momentum"] > g.momentum_floor) & (
-            factor_df["quality_score"] >= g.quality_floor
+        mask = (
+            (factor_df["momentum"] > g.momentum_floor)
+            & (factor_df["quality_score"] >= g.quality_floor)
         )
         if g.use_trend_filter and getattr(g, "trend_hard_filter", True):
             mask &= factor_df["trend_ok"]
@@ -662,15 +309,13 @@ def rebalance(context):
         signal_series = signal_series[signal_series > 0]
 
     if signal_series.empty:
-        _print_header("⚠️ 无有效信号 - 清仓")
-        log.info("🚫 所有ETF信号为负，执行清仓")
+        log.warn("no positive signals, clear positions")
         _execute_orders(context, {})
         return
 
     candidates = _select_candidates(signal_series, factor_df)
     if not candidates:
-        _print_header("⚠️ 无候选标的 - 清仓")
-        log.info("🚫 约束条件过滤后无候选ETF，执行清仓")
+        log.warn("no candidates after constraints, clear positions")
         _execute_orders(context, {})
         return
     returns_df = _build_returns_df(candidates)
@@ -699,6 +344,7 @@ def rebalance(context):
     if g.use_risk_parity:
         weights = _apply_risk_parity(weights, returns_df)
 
+    # 成交拥挤度惩罚（短期成交激增时降权）。
     penalties = []
     for etf in returns_df.columns:
         ratio = g.factor_df.loc[etf, "volume_ratio"]
@@ -749,27 +395,9 @@ def rebalance(context):
     if max_weight:
         weights = _apply_weight_cap(weights, max_weight)
     target_weights = dict(zip(returns_df.columns, weights))
-
-    _print_header(f"🔄 调仓执行 - {context.current_dt.strftime('%Y-%m-%d')}")
-    _print_weight_table(target_weights, factor_df, context.portfolio.total_value)
-
-    current_positions = context.portfolio.positions
-    changes = {}
-    for etf in target_weights:
-        if etf in current_positions:
-            changes[etf] = "HOLD"
-    for etf in current_positions:
-        if etf not in target_weights:
-            changes[etf] = "SELL"
-    for etf in target_weights:
-        if etf not in current_positions:
-            changes[etf] = "BUY"
-
-    _print_rebalance_summary(changes)
+    log.info("target weights: {}".format({k: round(v, 4) for k, v in target_weights.items()}))
 
     _execute_orders(context, target_weights)
-
-    print_etf_cumulative_returns_summary(context)
 
 
 def _execute_orders(context, target_weights):
@@ -792,159 +420,28 @@ def _execute_orders(context, target_weights):
             shares = 0
         target_shares[etf] = shares
 
+    # 卖出不在目标列表中的持仓。
     for etf in list(context.portfolio.positions.keys()):
         if etf not in target_shares and not current_data[etf].paused:
-            log.info(f"🔴 卖出 {_format_etf_code(etf)} ({_get_etf_name(etf)})")
             order_target(etf, 0)
 
+    # 先减仓释放资金。
     for etf, shares in target_shares.items():
         if current_data[etf].paused:
             continue
         current_pos = context.portfolio.positions.get(etf)
         current_shares = current_pos.total_amount if current_pos else 0
         if shares < current_shares:
-            log.info(f"🔴 减仓 {_format_etf_code(etf)}: {current_shares} -> {shares}股")
             order_target(etf, shares)
 
+    # 卖出后再加仓。
     for etf, shares in target_shares.items():
         if current_data[etf].paused:
             continue
         current_pos = context.portfolio.positions.get(etf)
         current_shares = current_pos.total_amount if current_pos else 0
         if shares > current_shares:
-            log.info(f"🟢 加仓 {_format_etf_code(etf)}: {current_shares} -> {shares}股")
             order_target(etf, shares)
-
-
-def daily_summary(context):
-    """每日收盘后打印持仓汇总"""
-    positions = context.portfolio.positions
-    _print_daily_summary(context, positions)
-
-
-def update_etf_cumulative_returns(context):
-    """
-    每日收盘后更新ETF累积收益数据
-    跟踪每个ETF的持仓成本和当前收益
-    """
-    positions = context.portfolio.positions
-    current_date = context.current_dt.strftime("%Y-%m-%d")
-
-    if g.backtest_start_date is None:
-        g.backtest_start_date = current_date
-
-    for etf, pos in positions.items():
-        current_price = pos.price
-        avg_cost = pos.avg_cost
-        shares = pos.total_amount
-        market_value = shares * current_price
-
-        if etf not in g.etf_cumulative_returns:
-            g.etf_cumulative_returns[etf] = {
-                "first_cost": avg_cost,
-                "first_shares": shares,
-                "start_date": current_date,
-                "total_pnl": 0,
-                "total_return": 0,
-                "trade_count": 0,
-            }
-
-        record = g.etf_cumulative_returns[etf]
-        if shares > 0:
-            pnl = (current_price - avg_cost) * shares
-            ret = (current_price - avg_cost) / avg_cost if avg_cost > 0 else 0
-            record["total_pnl"] = pnl
-            record["total_return"] = ret
-            record["current_price"] = current_price
-            record["current_shares"] = shares
-
-
-def print_etf_cumulative_returns_summary(context):
-    """
-    打印所有ETF的累积收益汇总
-    可在调仓时或回测结束时调用
-    """
-    if not g.etf_cumulative_returns:
-        return
-
-    _print_header("📈 ETF累积收益监控")
-
-    log.info(f"回测起始: {g.backtest_start_date}")
-    log.info(f"当前日期: {context.current_dt.strftime('%Y-%m-%d')}")
-    log.info("")
-
-    table = PrettyTable(
-        [
-            "ETF代码",
-            "ETF名称",
-            "分类",
-            "当前价格",
-            "持仓天数",
-            "总盈亏",
-            "累积收益",
-            "交易次数",
-        ]
-    )
-    table.hrules = prettytable.ALL
-    table.align = "l"
-    table.align = "r"
-
-    sorted_etfs = sorted(
-        g.etf_cumulative_returns.items(),
-        key=lambda x: x[1].get("total_return", 0),
-        reverse=True,
-    )
-
-    total_pnl = 0
-    for etf, record in sorted_etfs:
-        if record.get("current_shares", 0) == 0:
-            continue
-
-        current_price = record.get("current_price", 0)
-        total_pnl += record.get("total_pnl", 0)
-        trade_count = record.get("trade_count", 0)
-
-        pnl_str = f"¥{record.get('total_pnl', 0):+,.0f}"
-        ret_str = f"{record.get('total_return', 0) * 100:+.2f}%"
-
-        if record.get("total_return", 0) > 0.05:
-            ret_str = f"🟢 {ret_str}"
-        elif record.get("total_return", 0) < -0.05:
-            ret_str = f"🔴 {ret_str}"
-        else:
-            ret_str = f"🟡 {ret_str}"
-
-        start_date = record.get("start_date", "")
-        try:
-            from datetime import datetime
-
-            start = datetime.strptime(start_date, "%Y-%m-%d")
-            end = datetime.strptime(context.current_dt.strftime("%Y-%m-%d"), "%Y-%m-%d")
-            hold_days = (end - start).days
-        except:
-            hold_days = 0
-
-        table.add_row(
-            [
-                _format_etf_code(etf),
-                _get_etf_name(etf),
-                _get_etf_category(etf),
-                f"¥{current_price:.3f}" if current_price else "N/A",
-                f"{hold_days}天",
-                pnl_str,
-                ret_str,
-                f"{trade_count}次",
-            ]
-        )
-
-    log.info(f"\n{table}\n")
-
-    if total_pnl > 0:
-        log.info(f"💰 累计总盈亏: 🟢 ¥{total_pnl:,.0f}")
-    else:
-        log.info(f"💰 累计总盈亏: 🔴 ¥{total_pnl:,.0f}")
-
-    log.info("")
 
 
 def _build_returns_df(etfs):
@@ -981,14 +478,15 @@ def _epo_weights(returns_df, signals, risk_aversion, shrinkage):
     if risk_aversion > 0:
         raw = raw / risk_aversion
 
+    # 仅做多约束。
     raw = np.maximum(0, raw)
     return _normalize(raw)
 
 
 def _compute_metrics(close, volume):
-    quality_prices = close[-g.quality_lookback :]
-    momentum_prices = close[-g.momentum_lookback :]
-    quality_volume = volume[-g.quality_lookback :]
+    quality_prices = close[-g.quality_lookback:]
+    momentum_prices = close[-g.momentum_lookback:]
+    quality_volume = volume[-g.quality_lookback:]
 
     sharpe = _rolling_metric_on_prices(
         quality_prices,
@@ -1112,8 +610,8 @@ def _calc_annualized_return(log_prices):
 def _calc_volume_ratio(volume):
     if len(volume) < g.volume_long_window:
         return 1.0
-    short_avg = np.mean(volume[-g.volume_short_window :])
-    long_avg = np.mean(volume[-g.volume_long_window :])
+    short_avg = np.mean(volume[-g.volume_short_window:])
+    long_avg = np.mean(volume[-g.volume_long_window:])
     if long_avg <= 0:
         return 1.0
     return short_avg / long_avg
@@ -1122,7 +620,7 @@ def _calc_volume_ratio(volume):
 def _calc_trend_filter(close):
     if len(close) < g.trend_window:
         return True, 0.0
-    window = close[-g.trend_window :]
+    window = close[-g.trend_window:]
     ma = float(np.mean(window))
     dd = _calc_max_drawdown(window)
     if ma <= 0:
@@ -1398,7 +896,9 @@ def _adjust_weights_for_trading(target_weights, current_data, total_value):
     if g.use_dynamic_a_share_cap and g.factor_df is not None:
         a_share_cap = _dynamic_a_share_cap(assets, g.factor_df)
     if a_share_cap is not None:
-        weights = _apply_group_weight_cap(weights, assets, g.a_share_etfs, a_share_cap)
+        weights = _apply_group_weight_cap(
+            weights, assets, g.a_share_etfs, a_share_cap
+        )
     industry_cap = g.industry_weight_cap
     if g.use_dynamic_industry_cap and g.factor_df is not None:
         industry_cap = _dynamic_industry_cap(assets, g.factor_df)
@@ -1441,9 +941,7 @@ def _get_unit_nav(etf, ref_date):
     try:
         nav = get_extras("unit_net_value", etf, end_date=ref_date, count=1)
         if nav is None or nav.empty:
-            nav = get_extras(
-                "unit_net_value", etf, start_date=ref_date, end_date=ref_date
-            )
+            nav = get_extras("unit_net_value", etf, start_date=ref_date, end_date=ref_date)
         if nav is None or nav.empty:
             return None
         if etf in nav.columns:
@@ -1510,7 +1008,7 @@ def _ewma_volatility(returns, lam=0.94):
         return 0.0
     var = returns[0] ** 2
     for r in returns[1:]:
-        var = lam * var + (1 - lam) * (r**2)
+        var = lam * var + (1 - lam) * (r ** 2)
     return math.sqrt(max(var, 0.0)) * math.sqrt(252)
 
 
